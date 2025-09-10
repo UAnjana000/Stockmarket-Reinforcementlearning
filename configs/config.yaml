@@ -1,0 +1,123 @@
+# Main configuration file for RL Trading Agent
+project:
+  name: "RL_Trading_Agent"
+  seed: 42
+  device: "cuda"  # Change to "cpu" if no GPU available
+
+environment:
+  name: "TradingEnv"
+  ticker: "AAPL"  # Stock ticker to trade
+  window_size: 180  # 3 hours in minutes (for 1-minute data)
+  trading_window: 720  # 12 hours in minutes
+  initial_balance: 10000.0
+  transaction_cost: 0.001  # 0.1% per trade
+  max_position_size: 1.0  # Maximum fraction of portfolio per trade
+  
+data:
+  source: "yfinance"  # or "csv", "api"
+  start_date: "2023-01-01"
+  end_date: "2024-01-01"
+  interval: "1m"  # 1-minute intervals
+  train_test_split: 0.8
+  validation_split: 0.1
+  
+  # Technical indicators to compute
+  indicators:
+    - sma_20
+    - sma_50
+    - ema_12
+    - ema_26
+    - rsi_14
+    - macd
+    - bollinger_bands
+    - volume_ratio
+    - volatility
+    
+  # Normalization
+  normalize: true
+  scaler_type: "minmax"  # or "standard"
+
+agent:
+  algorithm: "PPO"  # or "SAC", "DQN"
+  
+  # Network architecture
+  network:
+    type: "lstm"  # or "gru", "transformer"
+    lstm_layers: 2
+    lstm_units: 128
+    fc_layers: [256, 128]
+    dropout: 0.2
+    activation: "relu"
+    
+  # PPO specific
+  ppo:
+    learning_rate: 3e-4
+    n_steps: 2048
+    batch_size: 64
+    n_epochs: 10
+    gamma: 0.99
+    gae_lambda: 0.95
+    clip_range: 0.2
+    vf_coef: 0.5
+    ent_coef: 0.01
+    max_grad_norm: 0.5
+    
+  # SAC specific  
+  sac:
+    learning_rate: 3e-4
+    buffer_size: 100000
+    batch_size: 256
+    gamma: 0.99
+    tau: 0.005
+    alpha: 0.2
+    
+  # Experience replay
+  replay_buffer:
+    size: 100000
+    prioritized: false
+    
+training:
+  total_timesteps: 1000000
+  eval_freq: 10000
+  n_eval_episodes: 10
+  save_freq: 50000
+  log_interval: 100
+  verbose: 1
+  
+  # Early stopping
+  early_stopping:
+    enabled: true
+    patience: 20
+    min_delta: 0.001
+    
+  # Checkpointing
+  checkpoint:
+    save_best: true
+    save_last: true
+    save_freq: 10000
+    
+evaluation:
+  metrics:
+    - total_profit
+    - sharpe_ratio
+    - max_drawdown
+    - win_rate
+    - avg_trade_profit
+    - total_trades
+    
+  baselines:
+    - buy_and_hold
+    - random_agent
+    - sma_crossover
+    
+  visualization:
+    plot_trades: true
+    plot_portfolio: true
+    plot_metrics: true
+    
+logging:
+  use_wandb: true
+  use_tensorboard: true
+  project_name: "rl-trading"
+  run_name: null  # Auto-generated if null
+  log_dir: "results/logs"
