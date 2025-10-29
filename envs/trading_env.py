@@ -67,6 +67,9 @@ class TradingEnv(gym.Env):
         
         # Random start point ensuring enough room for trading window
         max_start = len(self.df) - self.trading_window - self.window_size - 1
+        # Ensure we have enough data for at least one step
+        if max_start <= self.window_size:
+            max_start = self.window_size + 1
         self.start_step = np.random.randint(self.window_size, max_start)
         self.current_step = self.start_step
         
@@ -78,11 +81,15 @@ class TradingEnv(gym.Env):
         current_price = self.df.iloc[self.current_step]['close']
         prev_portfolio_value = self._get_portfolio_value()
         
-        # Process action
-        if action_value > 0.1:  # Buy signal
+        # Process action with more sensitive thresholds
+        if action_value > 0.05:  # Buy signal (reduced threshold)
             self._execute_buy(action_value, current_price)
-        elif action_value < -0.1:  # Sell signal
+            if self.current_step < self.start_step + 10:  # Debug first 10 steps
+                print(f"BUY: action={action_value:.4f}, price={current_price:.2f}")
+        elif action_value < -0.05:  # Sell signal (reduced threshold)
             self._execute_sell(abs(action_value), current_price)
+            if self.current_step < self.start_step + 10:  # Debug first 10 steps
+                print(f"SELL: action={action_value:.4f}, price={current_price:.2f}")
         # else: Hold
         
         # Move to next step
@@ -118,7 +125,9 @@ class TradingEnv(gym.Env):
             'shares_held': self.shares_held,
             'current_price': current_price,
             'total_trades': self.total_trades,
-            'step_return': step_return
+            'step_return': step_return,
+            'action_taken': 'buy' if action_value > 0.05 else 'sell' if action_value < -0.05 else 'hold',
+            'action_value': action_value
         }
         
         return self._get_observation(), reward, done, truncated, info
@@ -177,6 +186,9 @@ class TradingEnv(gym.Env):
     
     def _get_portfolio_value(self) -> float:
         """Calculate total portfolio value"""
+        # Ensure current_step is within bounds
+        if self.current_step >= len(self.df):
+            self.current_step = len(self.df) - 1
         current_price = self.df.iloc[self.current_step]['close']
         return self.balance + (self.shares_held * current_price)
     
@@ -198,6 +210,9 @@ class TradingEnv(gym.Env):
             market_window = pd.concat([padding, market_window], ignore_index=True)
         
         # Portfolio state features
+        # Ensure current_step is within bounds
+        if self.current_step >= len(self.df):
+            self.current_step = len(self.df) - 1
         current_price = self.df.iloc[self.current_step]['close']
         portfolio_value = self._get_portfolio_value()
         

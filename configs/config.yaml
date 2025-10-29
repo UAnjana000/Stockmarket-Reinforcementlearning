@@ -6,15 +6,17 @@ project:
 
 environment:
   name: "TradingEnv"
-  ticker: "AAPL"  # Stock ticker to trade
-  window_size: 180  # 3 hours in minutes (for 1-minute data)
-  trading_window: 720  # 12 hours in minutes
+  ticker: "MSFT"  # Stock ticker to trade
+  window_size: 50  # Reduced window size for limited data
+  trading_window: 100  # Reduced trading window for limited data
   initial_balance: 10000.0
   transaction_cost: 0.001  # 0.1% per trade
   max_position_size: 1.0  # Maximum fraction of portfolio per trade
+  normalize_obs: true
   
 data:
   source: "yfinance"  # or "csv", "api"
+  ticker: "MSFT"
   start_date: "2023-01-01"
   end_date: "2024-01-01"
   interval: "1m"  # 1-minute intervals
