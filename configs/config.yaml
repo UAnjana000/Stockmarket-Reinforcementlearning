@@ -6,7 +6,7 @@ project:
 
 environment:
   name: "TradingEnv"
-  ticker: "MSFT"  # Stock ticker to trade
+  ticker: "TSLA"  # Stock ticker to trade
   window_size: 50  # Reduced window size for limited data
   trading_window: 100  # Reduced trading window for limited data
   initial_balance: 10000.0
@@ -16,7 +16,7 @@ environment:
   
 data:
   source: "yfinance"  # or "csv", "api"
-  ticker: "MSFT"
+  ticker: "TSLA"
   start_date: "2023-01-01"
   end_date: "2024-01-01"
   interval: "1m"  # 1-minute intervals

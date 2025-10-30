@@ -295,6 +295,16 @@ def main(args):
     # Load processed data
     test_df = pd.read_csv('data/processed/test.csv', index_col=0, parse_dates=True)
     
+    # Attach raw, unnormalized close price for trading execution
+    try:
+        raw_df = data_processor.fetch_data()
+        # Align by index to processed test_df
+        raw_aligned = raw_df.reindex(test_df.index).fillna(method='ffill').fillna(method='bfill')
+        if 'close' in raw_aligned.columns:
+            test_df['close_price'] = raw_aligned['close'].astype(float).values
+    except Exception as e:
+        print(f"Warning: could not attach raw close price: {e}")
+    
     # Create test environment
     test_env = TradingEnv(
         df=test_df,

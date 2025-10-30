@@ -236,6 +236,25 @@ def run_backtest(args):
         df = processor.add_technical_indicators(df)
         df = processor.normalize_data(df)
     
+    # Ensure raw, unnormalized close price is available for execution
+    try:
+        # If df came from cached processed data, attach raw prices
+        if 'close_price' not in df.columns:
+            proc_start = df.index.min().strftime('%Y-%m-%d') if hasattr(df.index.min(), 'strftime') else None
+            proc_end = df.index.max().strftime('%Y-%m-%d') if hasattr(df.index.max(), 'strftime') else None
+            processor_for_raw = DataProcessor(
+                ticker='SPY',
+                start_date=proc_start or '2023-01-01',
+                end_date=proc_end or '2024-01-01',
+                interval='1d'
+            )
+            raw_backtest = processor_for_raw.fetch_data()
+            raw_backtest_aligned = raw_backtest.reindex(df.index).fillna(method='ffill').fillna(method='bfill')
+            if 'close' in raw_backtest_aligned.columns:
+                df['close_price'] = raw_backtest_aligned['close'].astype(float).values
+    except Exception as e:
+        print(f"Warning: could not attach raw close price for backtest: {e}")
+
     # Create environment with the same configuration as training
     env = TradingEnv(
         df=df,
