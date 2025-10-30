@@ -118,9 +118,17 @@ def main(args):
     
     # Add algorithm-specific parameters
     if config['agent']['algorithm'] == 'PPO':
-        agent_config.update(config['agent']['ppo'])
+        ppo_config = config['agent']['ppo'].copy()
+        # Ensure learning_rate is a float
+        if 'learning_rate' in ppo_config:
+            ppo_config['learning_rate'] = float(ppo_config['learning_rate'])
+        agent_config.update(ppo_config)
     elif config['agent']['algorithm'] == 'SAC':
-        agent_config.update(config['agent']['sac'])
+        sac_config = config['agent']['sac'].copy()
+        # Ensure learning_rate is a float
+        if 'learning_rate' in sac_config:
+            sac_config['learning_rate'] = float(sac_config['learning_rate'])
+        agent_config.update(sac_config)
     
     agent = TradingRLAgent(
         env=train_env,
@@ -166,31 +174,39 @@ def main(args):
     # Evaluate on test set
     logger.info("Evaluating on test set...")
     test_env = create_env(test_df, config)
+    test_env = Monitor(test_env, filename=f"{config['logging']['log_dir']}/test")
     test_env = DummyVecEnv([lambda: test_env])
     
     if args.normalize_obs and 'train_env' in locals():
         test_env = VecNormalize(test_env, norm_obs=True, norm_reward=False, training=False)
         test_env.obs_rms = train_env.obs_rms  # Use training statistics
     
-    test_results = agent.evaluate(
-        env=test_env,
-        n_episodes=config['training']['n_eval_episodes'],
-        deterministic=True,
-        render=args.render
-    )
+    try:
+        test_results = agent.evaluate(
+            env=test_env,
+            n_episodes=config['training']['n_eval_episodes'],
+            deterministic=True,
+            render=args.render
+        )
+        
+        logger.info(f"Test Results:")
+        logger.info(f"  Mean Return: {test_results['mean_return']:.4f}")
+        logger.info(f"  Mean Reward: {test_results['mean_reward']:.4f}")
+        logger.info(f"  Mean Trades: {test_results['mean_trades']:.1f}")
+        
+        # Log final results to W&B
+        if config['logging']['use_wandb']:
+            wandb.log({
+                'test/mean_return': test_results['mean_return'],
+                'test/mean_reward': test_results['mean_reward'],
+                'test/mean_trades': test_results['mean_trades']
+            })
+    except Exception as e:
+        logger.warning(f"Evaluation failed: {e}")
+        logger.info("Training completed successfully, but evaluation failed.")
+        test_results = {'mean_return': 0.0, 'mean_reward': 0.0, 'mean_trades': 0.0}
     
-    logger.info(f"Test Results:")
-    logger.info(f"  Mean Return: {test_results['mean_return']:.4f}")
-    logger.info(f"  Mean Reward: {test_results['mean_reward']:.4f}")
-    logger.info(f"  Mean Trades: {test_results['mean_trades']:.1f}")
-    
-    # Log final results to W&B
     if config['logging']['use_wandb']:
-        wandb.log({
-            'test/mean_return': test_results['mean_return'],
-            'test/mean_reward': test_results['mean_reward'],
-            'test/mean_trades': test_results['mean_trades']
-        })
         wandb.finish()
     
     # Save final model

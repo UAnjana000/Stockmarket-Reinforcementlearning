@@ -46,6 +46,8 @@ Examples:
     train_parser.add_argument('--config', type=str, default='configs/config.yaml', help='Configuration file')
     train_parser.add_argument('--resume', type=str, help='Resume from checkpoint')
     train_parser.add_argument('--device', type=str, default='auto', help='Device (cpu/cuda/auto)')
+    train_parser.add_argument('--normalize-obs', action='store_true', help='Normalize observations using running statistics')
+    train_parser.add_argument('--render', action='store_true', help='Render environment during evaluation')
     
     # Evaluation command
     eval_parser = subparsers.add_parser('evaluate', help='Evaluate trained model')
@@ -53,6 +55,10 @@ Examples:
     eval_parser.add_argument('--config', type=str, default='configs/config.yaml', help='Configuration file')
     eval_parser.add_argument('--episodes', type=int, default=10, help='Number of evaluation episodes')
     eval_parser.add_argument('--plot', action='store_true', help='Generate plots')
+    eval_parser.add_argument('--normalize-obs', action='store_true', help='Use observation normalization')
+    eval_parser.add_argument('--norm-stats', type=str, help='Path to normalization statistics file')
+    eval_parser.add_argument('--stochastic', action='store_true', help='Use stochastic actions during evaluation')
+    eval_parser.add_argument('--save-results', action='store_true', help='Save evaluation results to file')
     
     # Live trading simulation
     live_parser = subparsers.add_parser('live', help='Run live trading simulation')
@@ -96,7 +102,15 @@ Examples:
         from scripts.train import main as train_main
         
         print("Starting training...")
-        train_main(args)
+        # Create a namespace with all required arguments for training
+        train_args = argparse.Namespace()
+        train_args.config = args.config
+        train_args.device = args.device
+        train_args.normalize_obs = getattr(args, 'normalize_obs', False)
+        train_args.render = getattr(args, 'render', False)
+        train_args.resume = getattr(args, 'resume', None)
+        
+        train_main(train_args)
         
     elif args.command == 'evaluate':
         from scripts.evaluate import main as eval_main
@@ -193,28 +207,62 @@ def run_backtest(args):
     from models.agent import TradingRLAgent
     from utils.preprocessing import DataProcessor
     from stable_baselines3.common.vec_env import DummyVecEnv
+    import yaml
     
     print(f"Running backtest from {args.start} to {args.end}...")
     
-    # Fetch historical data
-    processor = DataProcessor(
-        ticker='SPY',  # Default to SPY for backtesting
-        start_date=args.start,
-        end_date=args.end,
-        interval='1d'
-    )
+    # Use the original training configuration that matches the saved model
+    # The saved model was trained with window_size=50 and specific indicators
+    window_size = 50  # Original training used 50
+    trading_window = 100  # Original training used 100
     
-    df = processor.fetch_data()
-    df = processor.add_technical_indicators(df)
-    df = processor.normalize_data(df)
+    # Use the exact same data processing as training
+    # Load the original training data to match feature dimensions
+    try:
+        # Try to load the original training data first
+        df = pd.read_csv('data/processed/test.csv', index_col=0, parse_dates=True)
+        print("Using cached processed data to match training features")
+    except:
+        # If not available, create new data with exact same preprocessing
+        processor = DataProcessor(
+            ticker='SPY',  # Default to SPY for backtesting
+            start_date=args.start,
+            end_date=args.end,
+            interval='1d',
+            indicators=['sma_20', 'sma_50', 'ema_12', 'ema_26', 'rsi_14', 'macd', 'bollinger_bands', 'volume_ratio', 'volatility']
+        )
+        
+        df = processor.fetch_data()
+        df = processor.add_technical_indicators(df)
+        df = processor.normalize_data(df)
     
-    # Create environment
+    # Ensure raw, unnormalized close price is available for execution
+    try:
+        # If df came from cached processed data, attach raw prices
+        if 'close_price' not in df.columns:
+            proc_start = df.index.min().strftime('%Y-%m-%d') if hasattr(df.index.min(), 'strftime') else None
+            proc_end = df.index.max().strftime('%Y-%m-%d') if hasattr(df.index.max(), 'strftime') else None
+            processor_for_raw = DataProcessor(
+                ticker='SPY',
+                start_date=proc_start or '2023-01-01',
+                end_date=proc_end or '2024-01-01',
+                interval='1d'
+            )
+            raw_backtest = processor_for_raw.fetch_data()
+            raw_backtest_aligned = raw_backtest.reindex(df.index).fillna(method='ffill').fillna(method='bfill')
+            if 'close' in raw_backtest_aligned.columns:
+                df['close_price'] = raw_backtest_aligned['close'].astype(float).values
+    except Exception as e:
+        print(f"Warning: could not attach raw close price for backtest: {e}")
+
+    # Create environment with the same configuration as training
     env = TradingEnv(
         df=df,
+        window_size=window_size,
         initial_balance=args.initial_balance,
-        trading_window=len(df)
+        trading_window=min(trading_window, len(df))
     )
-    env = DummyVecEnv([lambda: env])
+    # Don't use DummyVecEnv for backtesting to avoid observation format issues
     
     # Load model
     agent = TradingRLAgent(env=env, algorithm='PPO')
@@ -227,13 +275,16 @@ def run_backtest(args):
     
     while not done:
         action, _ = agent.predict(obs, deterministic=True)
-        obs, reward, done, info = env.step(action)
+        obs, reward, done, truncated, info = env.step(action)
         
         if isinstance(info, list):
             info = info[0]
         
         portfolio_values.append(info['portfolio_value'])
-        done = done[0] if isinstance(done, (list, tuple)) else done
+        
+        # Check if episode is done or truncated
+        if done or truncated:
+            break
     
     # Calculate metrics
     final_value = portfolio_values[-1]

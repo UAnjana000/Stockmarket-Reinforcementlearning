@@ -54,14 +54,21 @@ class TradingEvaluator:
             done = False
             truncated = False
             
-            episode_portfolio_values = [env.envs[0].initial_balance]
+            episode_portfolio_values = [env.initial_balance]
             
             while not (done or truncated):
                 action, _ = agent.predict(obs, deterministic=deterministic)
-                obs, reward, done, truncated, info = env.step(action)
                 
-                if isinstance(info, list):
-                    info = info[0]
+                # Debug: Print action values for first few steps
+                if episode == 0 and len(episode_portfolio_values) < 5:
+                    print(f"Step {len(episode_portfolio_values)}: Action = {action[0]:.4f}")
+                
+                obs, reward, terminated, truncated, info = env.step(action)
+                done = terminated or truncated
+                
+                # Debug: Print action taken and portfolio info
+                if episode == 0 and len(episode_portfolio_values) < 5:
+                    print(f"  Action taken: {info.get('action_taken', 'unknown')}, Portfolio: ${info['portfolio_value']:.2f}, Trades: {info['total_trades']}")
                 
                 episode_portfolio_values.append(info['portfolio_value'])
             
@@ -73,8 +80,8 @@ class TradingEvaluator:
             all_returns.append(episode_return)
             all_portfolio_values.append(episode_portfolio_values)
             
-            if hasattr(env.envs[0], 'episode_trades'):
-                all_trades.extend(env.envs[0].episode_trades)
+            if hasattr(env, 'episode_trades'):
+                all_trades.extend(env.episode_trades)
         
         # Calculate aggregate metrics
         metrics = {
@@ -120,7 +127,9 @@ class TradingEvaluator:
         np.random.seed(42)
         random_returns = []
         for _ in range(10):
-            n_trades = np.random.randint(10, 50)
+            # Limit trades to available data points
+            max_trades = min(50, len(df) - 1)
+            n_trades = np.random.randint(1, max_trades)
             trade_points = np.random.choice(len(df), n_trades, replace=False)
             trade_points.sort()
             
@@ -286,6 +295,16 @@ def main(args):
     # Load processed data
     test_df = pd.read_csv('data/processed/test.csv', index_col=0, parse_dates=True)
     
+    # Attach raw, unnormalized close price for trading execution
+    try:
+        raw_df = data_processor.fetch_data()
+        # Align by index to processed test_df
+        raw_aligned = raw_df.reindex(test_df.index).fillna(method='ffill').fillna(method='bfill')
+        if 'close' in raw_aligned.columns:
+            test_df['close_price'] = raw_aligned['close'].astype(float).values
+    except Exception as e:
+        print(f"Warning: could not attach raw close price: {e}")
+    
     # Create test environment
     test_env = TradingEnv(
         df=test_df,
@@ -295,7 +314,8 @@ def main(args):
         max_position_size=config['environment']['max_position_size'],
         trading_window=config['environment']['trading_window']
     )
-    test_env = DummyVecEnv([lambda: test_env])
+    # Temporarily disable DummyVecEnv to fix observation format issues
+    # test_env = DummyVecEnv([lambda: test_env])
     
     # Load normalization if used
     if args.normalize_obs:
@@ -311,7 +331,7 @@ def main(args):
     # Evaluate agent
     print("Evaluating agent...")
     metrics, portfolio_values, trades = evaluator.evaluate_agent(
-        agent, test_env, n_episodes=args.n_episodes, deterministic=not args.stochastic
+        agent, test_env, n_episodes=args.episodes, deterministic=not args.stochastic
     )
     
     # Evaluate baselines

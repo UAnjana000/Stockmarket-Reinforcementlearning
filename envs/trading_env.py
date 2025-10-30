@@ -22,6 +22,8 @@ class TradingEnv(gym.Env):
         super().__init__()
         
         self.df = df
+        # Columns used as model inputs (exclude execution-only columns)
+        self.feature_columns = [col for col in df.columns if col != 'close_price']
         self.window_size = window_size
         self.initial_balance = initial_balance
         self.transaction_cost = transaction_cost
@@ -43,14 +45,14 @@ class TradingEnv(gym.Env):
         # Or continuous: [-1, 1] where negative=sell, positive=buy, 0=hold
         self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
         
-        # Observation space: [OHLCV + indicators + portfolio state]
-        n_features = len(df.columns) - 5  # Exclude OHLCV from count
+        # Observation space: [features + portfolio state], exclude execution-only columns
+        n_features = len(self.feature_columns)
         n_portfolio_features = 5  # cash_ratio, position_ratio, unrealized_pnl, time_remaining, trades_count
-        obs_shape = (window_size, n_features + 5) + (n_portfolio_features,)
+        obs_shape = (window_size, n_features) + (n_portfolio_features,)
         
         self.observation_space = spaces.Dict({
             'market_data': spaces.Box(low=-np.inf, high=np.inf, 
-                                     shape=(window_size, n_features + 5), dtype=np.float32),
+                                     shape=(window_size, n_features), dtype=np.float32),
             'portfolio_state': spaces.Box(low=-np.inf, high=np.inf, 
                                          shape=(n_portfolio_features,), dtype=np.float32)
         })
@@ -67,6 +69,9 @@ class TradingEnv(gym.Env):
         
         # Random start point ensuring enough room for trading window
         max_start = len(self.df) - self.trading_window - self.window_size - 1
+        # Ensure we have enough data for at least one step
+        if max_start <= self.window_size:
+            max_start = self.window_size + 1
         self.start_step = np.random.randint(self.window_size, max_start)
         self.current_step = self.start_step
         
@@ -75,14 +80,18 @@ class TradingEnv(gym.Env):
     def step(self, action: np.ndarray) -> Tuple[Dict, float, bool, bool, Dict]:
         # Execute action
         action_value = float(action[0])
-        current_price = self.df.iloc[self.current_step]['close']
+        current_price = self._get_current_price()
         prev_portfolio_value = self._get_portfolio_value()
         
-        # Process action
-        if action_value > 0.1:  # Buy signal
+        # Process action with more sensitive thresholds
+        if action_value > 0.0:  # Buy on any positive signal
             self._execute_buy(action_value, current_price)
-        elif action_value < -0.1:  # Sell signal
+            if self.current_step < self.start_step + 10:  # Debug first 10 steps
+                print(f"BUY: action={action_value:.4f}, price={current_price:.2f}")
+        elif action_value < 0.0:  # Sell on any negative signal
             self._execute_sell(abs(action_value), current_price)
+            if self.current_step < self.start_step + 10:  # Debug first 10 steps
+                print(f"SELL: action={action_value:.4f}, price={current_price:.2f}")
         # else: Hold
         
         # Move to next step
@@ -118,16 +127,24 @@ class TradingEnv(gym.Env):
             'shares_held': self.shares_held,
             'current_price': current_price,
             'total_trades': self.total_trades,
-            'step_return': step_return
+            'step_return': step_return,
+            'action_taken': 'buy' if action_value > 0.0 else 'sell' if action_value < 0.0 else 'hold',
+            'action_value': action_value
         }
         
         return self._get_observation(), reward, done, truncated, info
     
     def _execute_buy(self, fraction: float, current_price: float):
         """Execute buy order"""
+        # Skip if price is invalid (non-positive)
+        if current_price <= 0 or not np.isfinite(current_price):
+            return
         # Calculate maximum shares we can buy
         max_spend = self.balance * min(fraction, self.max_position_size)
         shares_to_buy = int(max_spend / (current_price * (1 + self.transaction_cost)))
+        # Ensure at least 1 share if affordable and positive intent
+        if shares_to_buy == 0 and fraction > 0 and self.balance >= current_price * (1 + self.transaction_cost):
+            shares_to_buy = 1
         
         if shares_to_buy > 0:
             cost = shares_to_buy * current_price * (1 + self.transaction_cost)
@@ -155,7 +172,11 @@ class TradingEnv(gym.Env):
     def _execute_sell(self, fraction: float, current_price: float):
         """Execute sell order"""
         if self.shares_held > 0:
+            if current_price <= 0 or not np.isfinite(current_price):
+                return
             shares_to_sell = int(self.shares_held * min(fraction, 1.0))
+            if shares_to_sell == 0 and self.shares_held > 0:
+                shares_to_sell = 1
             
             if shares_to_sell > 0:
                 revenue = shares_to_sell * current_price * (1 - self.transaction_cost)
@@ -177,8 +198,22 @@ class TradingEnv(gym.Env):
     
     def _get_portfolio_value(self) -> float:
         """Calculate total portfolio value"""
-        current_price = self.df.iloc[self.current_step]['close']
+        # Ensure current_step is within bounds
+        if self.current_step >= len(self.df):
+            self.current_step = len(self.df) - 1
+        current_price = self._get_current_price()
         return self.balance + (self.shares_held * current_price)
+
+    def _get_current_price(self) -> float:
+        """Get the current unnormalized price if available, else fallback to 'close'."""
+        if self.current_step >= len(self.df):
+            idx = len(self.df) - 1
+        else:
+            idx = self.current_step
+        row = self.df.iloc[idx]
+        if 'close_price' in self.df.columns:
+            return float(row['close_price'])
+        return float(row['close'])
     
     def _get_observation(self) -> Dict[str, np.ndarray]:
         """Get current observation"""
@@ -186,7 +221,7 @@ class TradingEnv(gym.Env):
         start_idx = max(0, self.current_step - self.window_size + 1)
         end_idx = self.current_step + 1
         
-        market_window = self.df.iloc[start_idx:end_idx]
+        market_window = self.df[self.feature_columns].iloc[start_idx:end_idx]
         
         # Pad if necessary
         if len(market_window) < self.window_size:
@@ -198,7 +233,10 @@ class TradingEnv(gym.Env):
             market_window = pd.concat([padding, market_window], ignore_index=True)
         
         # Portfolio state features
-        current_price = self.df.iloc[self.current_step]['close']
+        # Ensure current_step is within bounds
+        if self.current_step >= len(self.df):
+            self.current_step = len(self.df) - 1
+        current_price = self._get_current_price()
         portfolio_value = self._get_portfolio_value()
         
         portfolio_state = np.array([
@@ -216,7 +254,7 @@ class TradingEnv(gym.Env):
     
     def render(self, mode='human'):
         """Render the environment"""
-        current_price = self.df.iloc[self.current_step]['close']
+        current_price = self._get_current_price()
         portfolio_value = self._get_portfolio_value()
         profit = portfolio_value - self.initial_balance
         
